@@ -13,7 +13,7 @@ crons = ["* * * * *"]
 
 # Environment variables
 [vars]
-MONITOR_DOMAINS = "curve.fi,yearn.fi,yearn.finance,curve.finance"
+MONITOR_DOMAINS = "yearn.fi,yearn.finance,curve.finance,curve.fi,resupply.fi"
 
 # Logging configuration
 [logfetch]
