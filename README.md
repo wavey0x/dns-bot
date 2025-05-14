@@ -15,7 +15,7 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/yourusername/dns-bot.git
+   git clone https://github.com/wavey0x/dns-bot.git
    cd dns-bot
    ```
 
@@ -25,15 +25,15 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
    npm install
    ```
 
-3. **Configure the bot:**
+3. **Configure your bot and secrets:**
 
-   - Create a `.env` file in the project root with the following variables:
+   - Create a `.env` file in the project root and supply values:
 
+     ```bash
+     cp .env.example .env
      ```
-     CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
-     TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-     TELEGRAM_CHAT_ID=your-telegram-chat-id
-     ```
+
+   - Supply the same variables and values as github actions secrets within your repository's settings.[^1]
 
    - Update `config.json` with your settings:
 
@@ -47,37 +47,7 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
      }
      ```
 
-   - **Required Secrets:**
-
-     These secrets must be set in two places:
-
-     1. **Local Development** (`.env` file):
-
-        ```
-        CLOUDFLARE_API_TOKEN=your-token
-        TELEGRAM_BOT_TOKEN=your-token
-        TELEGRAM_CHAT_ID=your-chat-id
-        ```
-
-     2. **GitHub Actions** (Repository Secrets):
-        - Go to your repository's Settings > Secrets and variables > Actions
-        - Add the following secrets:
-          - `CLOUDFLARE_API_TOKEN`
-          - `TELEGRAM_BOT_TOKEN`
-          - `TELEGRAM_CHAT_ID`
-
-   - **How to get your Cloudflare API token:**
-
-     - Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
-     - Navigate to **My Profile** > **API Tokens**.
-     - Click **Create Token**.
-     - Choose **Create Custom Token**.
-     - Set the following permissions:
-       - **Account** > **Workers** > **Edit**
-       - **Zone** > **DNS** > **Read**
-     - Set the **Account Resources** to **All accounts**.
-     - Set the **Zone Resources** to **All zones**.
-     - Click **Continue to summary** and then **Create Token**.
+   - Get your Cloudflare API token[^2]
 
 4. **Deploy the bot:**
 
@@ -117,6 +87,18 @@ To view the logs for your deployed worker:
 - **No logs:** Ensure logging is enabled in your `wrangler.toml` file.
 - **GitHub Actions fails:** Verify that all required secrets are set in your repository's Settings > Secrets and variables > Actions.
 
-## License
+## Footnotes
 
-MIT
+[^1]: Required secrets must be set in both your local `.env` file and GitHub Actions repository secrets. Go to your repository's Settings > Secrets and variables > Actions and add: `CLOUDFLARE_API_TOKEN`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID`.
+[^2]: To get your Cloudflare API token:
+
+    1. Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/)
+    2. Navigate to **My Profile** > **API Tokens**
+    3. Click **Create Token**
+    4. Choose **Create Custom Token**
+    5. Set the following permissions:
+       - **Account** > **Workers** > **Edit**
+       - **Zone** > **DNS** > **Read**
+    6. Set the **Account Resources** to **All accounts**
+    7. Set the **Zone Resources** to **All zones**
+    8. Click **Continue to summary** and then **Create Token**
