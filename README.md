@@ -72,6 +72,22 @@ A Cloudflare Worker that monitors DNS A records for specified domains and sends 
 - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token
 - `TELEGRAM_CHAT_ID`: Your Telegram chat ID
 
+### Managing Domains
+
+The list of domains to monitor is configured in `wrangler.toml` under the `[vars]` section.
+
+Example:
+
+```toml
+[vars]
+MONITOR_DOMAINS = "yearn.fi,yearn.finance,curve.finance,curve.fi,resupply.fi"
+```
+
+The changes will take effect after the next deployment. You can verify the domains being monitored by:
+
+- Checking the worker logs: `wrangler tail dns-bot`
+- Viewing the KV storage: `wrangler kv key list --namespace-id=your-namespace-id`
+
 ### KV Storage
 
 The bot uses Cloudflare KV to store:
