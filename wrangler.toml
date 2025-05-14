@@ -1,0 +1,20 @@
+name = "dns-bot"
+main = "src/index.ts"
+compatibility_date = "2024-02-20"
+
+# KV Namespace configuration
+kv_namespaces = [
+  { binding = "DNS_KV", id = "860d4c5cb9384e1cab56e7e70504d765" }
+]
+
+# Cron trigger configuration (runs every minute)
+[triggers]
+crons = ["* * * * *"]
+
+# Environment variables
+[vars]
+MONITOR_DOMAINS = "curve.fi,yearn.fi,yearn.finance,curve.finance"
+
+# Logging configuration
+[logfetch]
+enabled = true
