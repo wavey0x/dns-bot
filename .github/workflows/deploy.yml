@@ -22,6 +22,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check required secrets
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "❌ CLOUDFLARE_API_TOKEN is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            echo "❌ TELEGRAM_BOT_TOKEN is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "❌ TELEGRAM_CHAT_ID is not set"
+            exit 1
+          fi
+          echo "✅ All required secrets are set"
+
       - name: Deploy to Cloudflare Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
