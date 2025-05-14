@@ -10,11 +10,3 @@ kv_namespaces = [
 # Cron trigger configuration (runs every minute)
 [triggers]
 crons = ["* * * * *"]
-
-# Environment variables
-[vars]
-MONITOR_DOMAINS = "yearn.fi,yearn.finance,curve.finance,curve.fi,resupply.fi"
-
-# Logging configuration
-[logfetch]
-enabled = true

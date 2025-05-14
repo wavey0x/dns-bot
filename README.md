@@ -1,194 +1,101 @@
-# DNS Monitoring Bot
+# DNS Monitor Bot
 
-A Cloudflare Worker that monitors DNS A records for specified domains and sends notifications via Telegram when changes are detected. The bot also tracks and notifies about DNS authority reachability issues.
+A simple to configure, pre-built Cloudflare Worker that monitors DNS records for any list of user-specified domains and sends notifications via Telegram when changes are detected.
 
-## Features
-
-- Monitors multiple domains simultaneously
-- Tracks DNS A record changes
-- Detects DNS authority reachability issues
-- Sends notifications via Telegram
-- Persistent storage of DNS states and IPs
-- Detailed logging for debugging
+The project is designed to stay comfortably within Cloudflare's free tier for it's Worker and KV storage services.
 
 ## Prerequisites
 
-- Node.js and npm installed
-- Cloudflare account
-- Telegram bot token and chat ID
-- Wrangler CLI installed globally (`npm install -g wrangler`)
+- [Node.js](https://nodejs.org/) (v20 or later)
+- [npm](https://www.npmjs.com/) (comes with Node.js)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (v4 or later)
 
 ## Setup
 
-1. Clone the repository:
+1. **Clone the repository:**
 
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/yourusername/dns-bot.git
    cd dns-bot
    ```
 
-2. Install dependencies:
+2. **Install dependencies:**
 
    ```bash
    npm install
    ```
 
-3. Login to Cloudflare:
+3. **Configure the bot:**
 
-   ```bash
-   wrangler login
-   ```
+   - Create a `.env` file in the project root with the following variables:
 
-4. Create a KV namespace:
+     ```
+     CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
+     TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+     TELEGRAM_CHAT_ID=your-telegram-chat-id
+     ```
 
-   ```bash
-   wrangler kv:namespace create "DNS_KV"
-   ```
+   - Update `config.json` with your settings:
 
-5. Update `wrangler.toml` with your configuration:
+     ```json
+     {
+       "domains": ["domain1.com", "domain2.com"],
+       "cron": "*/5 * * * *",
+       "kvNamespace": {
+         "id": "your-kv-namespace-id"
+       }
+     }
+     ```
 
-   ```toml
-   # KV Namespace configuration
-   kv_namespaces = [
-     { binding = "DNS_KV", id = "your-namespace-id" }
-   ]
+   - **How to get your Cloudflare API token:**
 
-   # Environment variables
-   [vars]
-   MONITOR_DOMAINS = "domain1.com,domain2.com,domain3.com"  # Comma-separated list of domains
-   ```
+     - Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
+     - Navigate to **My Profile** > **API Tokens**.
+     - Click **Create Token**.
+     - Choose **Create Custom Token**.
+     - Set the following permissions:
+       - **Account** > **Workers** > **Edit**
+       - **Zone** > **DNS** > **Read**
+     - Set the **Account Resources** to **All accounts**.
+     - Set the **Zone Resources** to **All zones**.
+     - Click **Continue to summary** and then **Create Token**.
 
-6. Set your Telegram secrets:
-   ```bash
-   wrangler secret put TELEGRAM_BOT_TOKEN
-   wrangler secret put TELEGRAM_CHAT_ID
-   ```
+4. **Deploy the bot:**
 
-## Configuration
+   - **Option 1: Deploy locally**
 
-### Environment Variables
+     Run the deploy script:
 
-- `MONITOR_DOMAINS`: Comma-separated list of domains to monitor (e.g., "curve.fi,yearn.fi,yearn.finance,curve.finance")
-- `TELEGRAM_BOT_TOKEN`: Your Telegram bot token
-- `TELEGRAM_CHAT_ID`: Your Telegram chat ID
+     ```bash
+     npm run deploy
+     ```
 
-### Managing Domains
+     This will:
 
-The list of domains to monitor is configured in `wrangler.toml` under the `[vars]` section.
+     - Set up the KV namespace if needed
+     - Configure Telegram secrets
+     - Update the worker configuration
+     - Deploy to Cloudflare Workers
 
-Example:
+   - **Option 2: Deploy via GitHub Actions**
 
-```toml
-[vars]
-MONITOR_DOMAINS = "yearn.fi,yearn.finance,curve.finance,curve.fi,resupply.fi"
-```
+     - Push your changes to the `main` branch.
+     - The GitHub Action will automatically deploy the bot.
 
-The changes will take effect after the next deployment. You can verify the domains being monitored by:
+## Viewing Logs
 
-- Checking the worker logs: `wrangler tail dns-bot`
-- Viewing the KV storage: `wrangler kv key list --namespace-id=your-namespace-id`
+To view the logs for your deployed worker:
 
-### KV Storage
-
-The bot uses Cloudflare KV to store:
-
-- `dns:${domain}:state` - Current state ('no_authority' or 'resolved')
-- `dns:${domain}:ips` - Last known IP addresses
-
-To view KV storage:
-
-```bash
-# List all keys
-wrangler kv key list --namespace-id=your-namespace-id
-
-# Get value for a specific key
-wrangler kv key get --namespace-id=your-namespace-id "dns:domain.com:state"
-wrangler kv key get --namespace-id=your-namespace-id "dns:domain.com:ips"
-```
-
-### Logging
-
-The bot includes detailed logging for debugging. To view logs:
-
-```bash
-# Start a log tailing session
-wrangler tail dns-bot
-```
-
-## Notifications
-
-The bot sends three types of notifications:
-
-1. 🚨 DNS Change Detected
-
-   - When IP addresses change
-   - Includes previous and new IPs
-   - Technical details about the change
-
-2. ⚠️ DNS Authority Unreachable
-
-   - When a domain's authority servers are unreachable
-   - Includes DNS status and comments
-   - Technical details about the issue
-
-3. ✅ DNS Authority Restored
-   - When a previously unreachable domain becomes reachable
-   - Includes new IP addresses
-   - Technical details about the resolution
-
-## Deployment
-
-Deploy the worker:
-
-```bash
-wrangler deploy
-```
-
-The worker will run every minute to check for DNS changes.
+1. Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
+2. Navigate to **Workers & Pages**.
+3. Select your worker (`dns-bot`).
+4. Click on **Logs** to view the worker's logs.
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Wrangler not found**
-
-   - Solution: Install Wrangler globally: `npm install -g wrangler`
-
-2. **KV namespace errors**
-
-   - Solution: Verify the namespace ID in `wrangler.toml`
-   - Check KV permissions in Cloudflare dashboard
-
-3. **Telegram notification failures**
-
-   - Solution: Verify bot token and chat ID
-   - Check if the bot is added to the chat
-   - Ensure the bot has permission to send messages
-
-4. **DNS query failures**
-   - Solution: Check the logs using `wrangler tail dns-bot`
-   - Verify domain names are correct
-   - Check if domains are accessible
-
-### Checking Status
-
-1. View worker logs:
-
-   ```bash
-   wrangler tail dns-bot
-   ```
-
-2. Check KV storage:
-
-   ```bash
-   wrangler kv key list --namespace-id=your-namespace-id
-   ```
-
-3. Verify worker status in Cloudflare dashboard:
-   - Go to Workers & Pages
-   - Select your worker
-   - Check "Triggers" for cron status
-   - Check "Logs" for recent activity
+- **Wrangler not found:** Ensure Wrangler is installed globally or use `npx wrangler`.
+- **Deployment fails:** Check your API token and ensure all environment variables are set correctly.
+- **No logs:** Ensure logging is enabled in your `wrangler.toml` file.
 
 ## License
 

@@ -216,4 +216,18 @@ export default {
       await checkDomain(domain, env);
     }
   },
+
+  // Add fetch handler for HTTP requests
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<Response> {
+    return new Response(
+      "DNS Monitor Worker is running. This worker is triggered by cron.",
+      {
+        headers: { "Content-Type": "text/plain" },
+      }
+    );
+  },
 };

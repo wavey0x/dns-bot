@@ -1,0 +1,13 @@
+{
+  "domains": [
+    "yearn.fi",
+    "yearn.finance",
+    "curve.fi",
+    "curve.finance",
+    "resupply.fi"
+  ],
+  "cron": "*/5 * * * *",
+  "kvNamespace": {
+    "id": "860d4c5cb9384e1cab56e7e70504d765"
+  }
+}
