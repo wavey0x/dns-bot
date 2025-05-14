@@ -48,9 +48,9 @@ async function queryDNS(domain: string): Promise<DNSResponse> {
   const server = "https://1.1.1.1/dns-query";
   const url = new URL(server);
   url.searchParams.append("name", domain);
-  url.searchParams.append("type", "A");
+  url.searchParams.append("type", "SOA"); // First query SOA record
 
-  console.log(`Querying DNS server: ${url.toString()}`);
+  console.log(`Querying DNS server for SOA: ${url.toString()}`);
 
   const response = await fetch(url.toString(), {
     method: "GET",
@@ -71,10 +71,33 @@ async function queryDNS(domain: string): Promise<DNSResponse> {
     throw new Error(`DNS query failed: ${response.status} - ${errorText}`);
   }
 
-  const data: DNSResponse = await response.json();
-  console.log("Response data:", JSON.stringify(data, null, 2));
+  const soaData: DNSResponse = await response.json();
+  console.log("SOA Response data:", JSON.stringify(soaData, null, 2));
 
-  return data;
+  // Now query A records
+  url.searchParams.set("type", "A");
+  console.log(`Querying DNS server for A records: ${url.toString()}`);
+
+  const aResponse = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/dns-json",
+    },
+  });
+
+  if (!aResponse.ok) {
+    const errorText = await aResponse.text();
+    throw new Error(`DNS query failed: ${aResponse.status} - ${errorText}`);
+  }
+
+  const aData: DNSResponse = await aResponse.json();
+  console.log("A Record Response data:", JSON.stringify(aData, null, 2));
+
+  // Combine both responses
+  return {
+    ...aData,
+    Answer: [...(aData.Answer || []), ...(soaData.Answer || [])],
+  };
 }
 
 async function checkDomain(domain: string, env: Env): Promise<void> {
@@ -114,9 +137,15 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
     const aRecords =
       dnsData.Answer?.filter((answer) => answer.type === 1) || [];
 
+    // Get SOA record
+    const soaRecord = dnsData.Answer?.find((answer) => answer.type === 6);
+    const soaData = soaRecord?.data.split(" ") || [];
+    const serial = soaData[2] || "unknown";
+
     // Get the previous state and IPs from KV
     const previousState = await env.DNS_KV.get(`dns:${domain}:state`);
     const previousIPs = await env.DNS_KV.get(`dns:${domain}:ips`);
+    const previousSerial = await env.DNS_KV.get(`dns:${domain}:serial`);
     const previousIPsArray = previousIPs ? previousIPs.split(",") : [];
     const currentIPs = aRecords.map((record) => record.data);
 
@@ -124,30 +153,11 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
     previousIPsArray.sort();
     currentIPs.sort();
 
-    // If the state has changed from no_authority to having IPs
-    if (previousState === "no_authority" && currentIPs.length > 0) {
-      await env.DNS_KV.put(`dns:${domain}:state`, "resolved");
-      await env.DNS_KV.put(`dns:${domain}:ips`, currentIPs.join(","));
-
-      const message =
-        `✅ <b>DNS Authority Restored</b>\n\n` +
-        `Domain: <code>${domain}</code>\n` +
-        `New IPs: <code>${currentIPs.join(", ")}</code>\n` +
-        `Time: ${new Date().toISOString()}\n\n` +
-        `<b>Technical Details:</b>\n` +
-        `- DNS Status: <code>${dnsData.Status}</code>\n` +
-        `- Record Type: <code>A</code>\n` +
-        `- Number of Records: <code>${aRecords.length}</code>`;
-
-      await sendTelegramMessage(env, message);
-      console.log(`DNS authority restored for ${domain}`);
-      return;
-    }
-
     // If the IPs have changed
     if (JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)) {
       await env.DNS_KV.put(`dns:${domain}:state`, "resolved");
       await env.DNS_KV.put(`dns:${domain}:ips`, currentIPs.join(","));
+      await env.DNS_KV.put(`dns:${domain}:serial`, serial);
 
       const message =
         `🚨 <b>DNS Change Detected</b>\n\n` +
@@ -159,13 +169,42 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
         `<b>Technical Details:</b>\n` +
         `- DNS Status: <code>${dnsData.Status}</code>\n` +
         `- Record Type: <code>A</code>\n` +
-        `- Number of Records: <code>${aRecords.length}</code>`;
+        `- Number of Records: <code>${aRecords.length}</code>\n` +
+        `- SOA Serial: <code>${serial}</code>\n` +
+        `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
+        `- Admin Email: <code>${soaData[1] || "unknown"}</code>`;
 
       await sendTelegramMessage(env, message);
       console.log(`DNS change detected for ${domain}:`);
       console.log(`Previous IPs: ${previousIPs || "none"}`);
       console.log(`New IPs: ${currentIPs.join(", ")}`);
+      console.log(`SOA Serial: ${serial}`);
       console.log(`Timestamp: ${new Date().toISOString()}`);
+    } else if (serial !== previousSerial) {
+      // Only notify on SOA changes if IPs haven't changed
+      // This catches cases where other record types changed
+      await env.DNS_KV.put(`dns:${domain}:serial`, serial);
+
+      const message =
+        `📝 <b>DNS Zone Updated</b>\n\n` +
+        `Domain: <code>${domain}</code>\n` +
+        `Previous Serial: <code>${previousSerial || "unknown"}</code>\n` +
+        `New Serial: <code>${serial}</code>\n` +
+        `Time: ${new Date().toISOString()}\n\n` +
+        `<b>Technical Details:</b>\n` +
+        `- DNS Status: <code>${dnsData.Status}</code>\n` +
+        `- Record Type: <code>SOA</code>\n` +
+        `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
+        `- Admin Email: <code>${soaData[1] || "unknown"}</code>\n` +
+        `- Refresh: <code>${soaData[3] || "unknown"}</code>\n` +
+        `- Retry: <code>${soaData[4] || "unknown"}</code>\n` +
+        `- Expire: <code>${soaData[5] || "unknown"}</code>\n` +
+        `- Min TTL: <code>${soaData[6] || "unknown"}</code>`;
+
+      await sendTelegramMessage(env, message);
+      console.log(`SOA record updated for ${domain}:`);
+      console.log(`Previous Serial: ${previousSerial || "unknown"}`);
+      console.log(`New Serial: ${serial}`);
     } else {
       console.log(
         `No change detected for ${domain} (IPs: ${currentIPs.join(", ")})`
