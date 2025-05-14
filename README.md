@@ -47,6 +47,25 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
      }
      ```
 
+   - **Required Secrets:**
+
+     These secrets must be set in two places:
+
+     1. **Local Development** (`.env` file):
+
+        ```
+        CLOUDFLARE_API_TOKEN=your-token
+        TELEGRAM_BOT_TOKEN=your-token
+        TELEGRAM_CHAT_ID=your-chat-id
+        ```
+
+     2. **GitHub Actions** (Repository Secrets):
+        - Go to your repository's Settings > Secrets and variables > Actions
+        - Add the following secrets:
+          - `CLOUDFLARE_API_TOKEN`
+          - `TELEGRAM_BOT_TOKEN`
+          - `TELEGRAM_CHAT_ID`
+
    - **How to get your Cloudflare API token:**
 
      - Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
@@ -96,6 +115,7 @@ To view the logs for your deployed worker:
 - **Wrangler not found:** Ensure Wrangler is installed globally or use `npx wrangler`.
 - **Deployment fails:** Check your API token and ensure all environment variables are set correctly.
 - **No logs:** Ensure logging is enabled in your `wrangler.toml` file.
+- **GitHub Actions fails:** Verify that all required secrets are set in your repository's Settings > Secrets and variables > Actions.
 
 ## License
 
