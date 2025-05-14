@@ -19,14 +19,13 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
+        run: npm install
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
         env:
-          MONITOR_DOMAIN: ${{ secrets.MONITOR_DOMAIN }}
+          MONITOR_DOMAINS: ${{ secrets.MONITOR_DOMAINS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
