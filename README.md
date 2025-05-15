@@ -6,9 +6,9 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
 
 Example alert:
 
-<center>
-![](images/example_alert.png)
-</center>
+<p align="center">
+  <img src="images/example_alert.png" alt="Example alert" />
+</p>
 
 ## Prerequisites
 
