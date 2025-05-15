@@ -4,10 +4,10 @@ A simple to configure, pre-built Cloudflare Worker that monitors DNS records for
 
 The project is designed to stay comfortably within Cloudflare's free tier for it's Worker and KV storage services.
 
-Example alert:
-
 <p align="center">
   <img src="images/example_alert.png" alt="Example alert" />
+  <br/>
+  <i>Example alert</i>
 </p>
 
 ## Prerequisites
