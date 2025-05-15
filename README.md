@@ -4,6 +4,12 @@ A simple to configure, pre-built Cloudflare Worker that monitors DNS records for
 
 The project is designed to stay comfortably within Cloudflare's free tier for it's Worker and KV storage services.
 
+Example alert:
+
+<center>
+![](images/example_alert.png)
+</center>
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) (v20 or later)
