@@ -3,6 +3,7 @@ interface Env {
   MONITOR_DOMAINS: string; // Comma-separated list of domains
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
+  TELEGRAM_TOPIC_ID?: string;
 }
 
 interface DNSResponse {
@@ -27,16 +28,24 @@ interface DNSResponse {
 
 async function sendTelegramMessage(env: Env, message: string): Promise<void> {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const chatId = env.TELEGRAM_TOPIC_ID
+    ? `${env.TELEGRAM_CHAT_ID}_${env.TELEGRAM_TOPIC_ID}`
+    : env.TELEGRAM_CHAT_ID;
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text: message,
+    parse_mode: "HTML",
+  };
+  if (env.TELEGRAM_TOPIC_ID) body["message_thread_id"] = env.TELEGRAM_TOPIC_ID;
+
+  console.log("Sending Telegram message:", JSON.stringify({ url, body }, null, 2));
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: "HTML",
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

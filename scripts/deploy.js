@@ -159,6 +159,18 @@ async function setupTelegramSecrets() {
       );
     }
   }
+
+  // TELEGRAM_TOPIC_ID (optional)
+  let topicId = process.env.TELEGRAM_TOPIC_ID;
+  if (topicId) {
+    console.log("ℹ️ Using TELEGRAM_TOPIC_ID from environment");
+    runCommand(
+      `echo '${topicId}' | npx wrangler secret put TELEGRAM_TOPIC_ID`,
+      "Failed to set Telegram topic ID from environment"
+    );
+  } else {
+    console.log("ℹ️ Skipping TELEGRAM_TOPIC_ID (not set)");
+  }
 }
 
 // Set up MONITOR_DOMAINS from config.json
