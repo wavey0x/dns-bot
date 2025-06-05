@@ -4,10 +4,15 @@
     "yearn.finance",
     "curve.fi",
     "curve.finance",
-    "resupply.fi"
+    "resupply.fi",
+    "convexfinance.com",
+    "safe-transaction-mainnet.safe.global",
+    "safe.global",
+    "app.safe.global"
   ],
   "cron": "* * * * *",
   "kvNamespace": {
     "id": "860d4c5cb9384e1cab56e7e70504d765"
-  }
+  },
+  "suppressSOAAlerts": true
 }

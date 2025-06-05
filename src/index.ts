@@ -3,6 +3,7 @@ interface Env {
   MONITOR_DOMAINS: string; // Comma-separated list of domains
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
+  SUPPRESS_SOA_ALERTS?: string;
 }
 
 interface DNSResponse {
@@ -184,6 +185,12 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
       // Only notify on SOA changes if IPs haven't changed
       // This catches cases where other record types changed
       await env.DNS_KV.put(`dns:${domain}:serial`, serial);
+
+      // Skip SOA alert if suppression is enabled
+      if (env.SUPPRESS_SOA_ALERTS === "true") {
+        console.log(`Suppressing SOA alert for ${domain} as configured`);
+        return;
+      }
 
       const message =
         `📝 <b>DNS Zone Updated</b>\n\n` +

@@ -49,9 +49,12 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
        "cron": "*/5 * * * *",
        "kvNamespace": {
          "id": "your-kv-namespace-id"
-       }
+       },
+       "suppressSOAAlerts": true
      }
      ```
+
+   > **Note:** Each domain you want to monitor must be explicitly listed in the `domains` array. Subdomains are not automatically monitored - if you want to monitor a subdomain, add it to the list (e.g., `["domain.com", "sub.domain.com"]`).
 
    - Get your Cloudflare API token[^2]
 
