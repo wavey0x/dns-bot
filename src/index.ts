@@ -4,6 +4,7 @@ interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
   SUPPRESS_SOA_ALERTS?: string;
+  TRUST_CLOUDFRONT_IPS?: string;
 }
 
 interface DNSResponse {
@@ -24,6 +25,22 @@ interface DNSResponse {
     type: number;
   }>;
   Comment?: string[];
+}
+
+interface CloudFrontIPResponse {
+  CLOUDFRONT_GLOBAL_IP_LIST: string[];
+  CLOUDFRONT_REGIONAL_EDGE_IP_LIST: string[];
+}
+
+function ipToNumber(ip: string): number {
+  return (
+    ip
+      .split(".")
+      .reduce(
+        (acc: number, octet: string) => (acc << 8) + parseInt(octet),
+        0
+      ) >>> 0
+  );
 }
 
 async function sendTelegramMessage(env: Env, message: string): Promise<void> {
@@ -101,6 +118,38 @@ async function queryDNS(domain: string): Promise<DNSResponse> {
   };
 }
 
+async function isCloudFrontIP(ip: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips"
+    );
+    if (!response.ok) {
+      console.error("Failed to fetch CloudFront IP ranges");
+      return false;
+    }
+
+    const data = (await response.json()) as CloudFrontIPResponse;
+    const ipRanges = [
+      ...data.CLOUDFRONT_GLOBAL_IP_LIST,
+      ...data.CLOUDFRONT_REGIONAL_EDGE_IP_LIST,
+    ];
+
+    // Convert IP to number for comparison
+    const ipNum = ipToNumber(ip);
+
+    // Check if IP is in any of the ranges
+    return ipRanges.some((range) => {
+      const [baseIP, bits] = range.split("/");
+      const baseNum = ipToNumber(baseIP);
+      const mask = ~((1 << (32 - parseInt(bits))) - 1) >>> 0;
+      return (ipNum & mask) === (baseNum & mask);
+    });
+  } catch (error) {
+    console.error("Error checking CloudFront IP:", error);
+    return false;
+  }
+}
+
 async function checkDomain(domain: string, env: Env): Promise<void> {
   try {
     const dnsData = await queryDNS(domain);
@@ -154,33 +203,52 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
     previousIPsArray.sort();
     currentIPs.sort();
 
+    // Check if we should trust CloudFront IPs
+    let shouldSkipAlert = false;
+    if (
+      env.TRUST_CLOUDFRONT_IPS === "true" &&
+      JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)
+    ) {
+      // Check if all new IPs are CloudFront IPs
+      const allCloudFrontIPs = await Promise.all(
+        currentIPs.map((ip) => isCloudFrontIP(ip))
+      );
+      shouldSkipAlert = allCloudFrontIPs.every((isCloudFront) => isCloudFront);
+    }
+
     // If the IPs have changed
     if (JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)) {
       await env.DNS_KV.put(`dns:${domain}:state`, "resolved");
       await env.DNS_KV.put(`dns:${domain}:ips`, currentIPs.join(","));
       await env.DNS_KV.put(`dns:${domain}:serial`, serial);
 
-      const message =
-        `🚨 <b>DNS Change Detected</b>\n\n` +
-        `Domain: <code>${domain}</code>\n` +
-        `Previous IPs: <code>${previousIPs || "none"}</code>\n` +
-        `New IPs: <code>${currentIPs.join(", ")}</code>\n` +
-        `TTL: <code>${aRecords[0]?.TTL || "N/A"}</code>\n` +
-        `Time: ${new Date().toISOString()}\n\n` +
-        `<b>Technical Details:</b>\n` +
-        `- DNS Status: <code>${dnsData.Status}</code>\n` +
-        `- Record Type: <code>A</code>\n` +
-        `- Number of Records: <code>${aRecords.length}</code>\n` +
-        `- SOA Serial: <code>${serial}</code>\n` +
-        `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
-        `- Admin Email: <code>${soaData[1] || "unknown"}</code>`;
+      if (!shouldSkipAlert) {
+        const message =
+          `🚨 <b>DNS Change Detected</b>\n\n` +
+          `Domain: <code>${domain}</code>\n` +
+          `Previous IPs: <code>${previousIPs || "none"}</code>\n` +
+          `New IPs: <code>${currentIPs.join(", ")}</code>\n` +
+          `TTL: <code>${aRecords[0]?.TTL || "N/A"}</code>\n` +
+          `Time: ${new Date().toISOString()}\n\n` +
+          `<b>Technical Details:</b>\n` +
+          `- DNS Status: <code>${dnsData.Status}</code>\n` +
+          `- Record Type: <code>A</code>\n` +
+          `- Number of Records: <code>${aRecords.length}</code>\n` +
+          `- SOA Serial: <code>${serial}</code>\n` +
+          `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
+          `- Admin Email: <code>${soaData[1] || "unknown"}</code>`;
 
-      await sendTelegramMessage(env, message);
-      console.log(`DNS change detected for ${domain}:`);
-      console.log(`Previous IPs: ${previousIPs || "none"}`);
-      console.log(`New IPs: ${currentIPs.join(", ")}`);
-      console.log(`SOA Serial: ${serial}`);
-      console.log(`Timestamp: ${new Date().toISOString()}`);
+        await sendTelegramMessage(env, message);
+        console.log(`DNS change detected for ${domain}:`);
+        console.log(`Previous IPs: ${previousIPs || "none"}`);
+        console.log(`New IPs: ${currentIPs.join(", ")}`);
+        console.log(`SOA Serial: ${serial}`);
+        console.log(`Timestamp: ${new Date().toISOString()}`);
+      } else {
+        console.log(
+          `Skipping alert for ${domain} as all new IPs are CloudFront IPs`
+        );
+      }
     } else if (serial !== previousSerial) {
       // Only notify on SOA changes if IPs haven't changed
       // This catches cases where other record types changed
@@ -234,6 +302,31 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
   }
 }
 
+async function testCloudFrontIPCheck() {
+  const testIP = "3.166.244.103";
+  const testRange = "3.166.0.0/15";
+
+  // Convert IP to number
+  const ipNum = ipToNumber(testIP);
+
+  // Convert range to number and mask
+  const [baseIP, bits] = testRange.split("/");
+  const baseNum = ipToNumber(baseIP);
+  const mask = ~((1 << (32 - parseInt(bits))) - 1) >>> 0;
+
+  // Check if IP is in range
+  const isInRange = (ipNum & mask) === (baseNum & mask);
+
+  console.log(`Testing IP range check:`);
+  console.log(`IP: ${testIP} (${ipNum})`);
+  console.log(`Range: ${testRange}`);
+  console.log(`Base IP: ${baseIP} (${baseNum})`);
+  console.log(`Mask: ${mask.toString(2)}`);
+  console.log(`Is in range: ${isInRange}`);
+
+  return isInRange;
+}
+
 export default {
   async scheduled(
     event: ScheduledEvent,
@@ -269,6 +362,14 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<Response> {
+    // Add test endpoint
+    if (request.url.endsWith("/test-ip-range")) {
+      const result = await testCloudFrontIPCheck();
+      return new Response(JSON.stringify({ result }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(
       "DNS Monitor Worker is running. This worker is triggered by cron.",
       {

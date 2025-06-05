@@ -14,5 +14,6 @@
   "kvNamespace": {
     "id": "860d4c5cb9384e1cab56e7e70504d765"
   },
-  "suppressSOAAlerts": true
+  "suppressSOAAlerts": true,
+  "trustCloudFrontIps": true
 }
