@@ -1,35 +1,36 @@
-interface Env {
-  DNS_KV: KVNamespace;
-  MONITOR_DOMAINS: string; // Comma-separated list of domains
-  TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_CHAT_ID: string;
-  SUPPRESS_SOA_ALERTS?: string;
-  TRUST_CLOUDFRONT_IPS?: string;
+import {
+  Env,
+  DNSResponse,
+  KVNamespace,
+  CertificateInfo,
+  CloudFrontIPResponse,
+} from "./types";
+import { checkCertificate, validateCertificates } from "./cert-utils";
+
+interface DomainConfig {
+  name: string;
+  suppressNonIpSoaAlerts?: boolean;
+  trustCloudFrontIps?: boolean;
+  suppressCertAlerts?: boolean;
+  suppressIpChangeAlerts?: boolean;
+  criticalChangeWindowMinutes?: number;
 }
 
-interface DNSResponse {
-  Status: number;
-  TC: boolean;
-  RD: boolean;
-  RA: boolean;
-  AD: boolean;
-  CD: boolean;
-  Answer?: Array<{
-    name: string;
-    type: number;
-    TTL: number;
-    data: string;
-  }>;
-  Question?: Array<{
-    name: string;
-    type: number;
-  }>;
-  Comment?: string[];
+interface Config {
+  domains: DomainConfig[];
+  cron: string;
+  kvNamespace: {
+    id: string;
+  };
 }
 
-interface CloudFrontIPResponse {
-  CLOUDFRONT_GLOBAL_IP_LIST: string[];
-  CLOUDFRONT_REGIONAL_EDGE_IP_LIST: string[];
+interface DomainState {
+  state: string;
+  ips: string;
+  serial: string;
+  lastIpChange: string | null;
+  lastCertChange: string | null;
+  baselineCert: CertificateInfo | null;
 }
 
 function ipToNumber(ip: string): number {
@@ -150,7 +151,11 @@ async function isCloudFrontIP(ip: string): Promise<boolean> {
   }
 }
 
-async function checkDomain(domain: string, env: Env): Promise<void> {
+async function checkDomain(
+  domain: string,
+  domainConfig: DomainConfig,
+  env: Env
+): Promise<void> {
   try {
     const dnsData = await queryDNS(domain);
 
@@ -159,13 +164,24 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
       comment.includes("No Reachable Authority")
     );
 
-    if (noAuthority) {
-      // Get the previous state from KV
-      const previousState = await env.DNS_KV.get(`dns:${domain}:state`);
+    // Get current domain state from KV
+    const domainStateStr = await env.DNS_KV.get(`dns:${domain}`);
+    const domainState: DomainState = domainStateStr
+      ? JSON.parse(domainStateStr)
+      : {
+          state: "unknown",
+          ips: "",
+          serial: "",
+          lastIpChange: null,
+          lastCertChange: null,
+          baselineCert: null,
+        };
 
-      if (previousState !== "no_authority") {
-        // State has changed to no authority
-        await env.DNS_KV.put(`dns:${domain}:state`, "no_authority");
+    if (noAuthority) {
+      if (domainState.state !== "no_authority") {
+        // Update state
+        domainState.state = "no_authority";
+        await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
 
         const message =
           `⚠️ <b>DNS Authority Unreachable</b>\n\n` +
@@ -192,21 +208,17 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
     const soaData = soaRecord?.data.split(" ") || [];
     const serial = soaData[2] || "unknown";
 
-    // Get the previous state and IPs from KV
-    const previousState = await env.DNS_KV.get(`dns:${domain}:state`);
-    const previousIPs = await env.DNS_KV.get(`dns:${domain}:ips`);
-    const previousSerial = await env.DNS_KV.get(`dns:${domain}:serial`);
-    const previousIPsArray = previousIPs ? previousIPs.split(",") : [];
+    const previousIPsArray = domainState.ips ? domainState.ips.split(",") : [];
     const currentIPs = aRecords.map((record) => record.data);
 
     // Sort arrays for consistent comparison
     previousIPsArray.sort();
     currentIPs.sort();
 
-    // Check if we should trust CloudFront IPs
+    // Check if we should trust CloudFront IPs (default to false)
     let shouldSkipAlert = false;
     if (
-      env.TRUST_CLOUDFRONT_IPS === "true" &&
+      domainConfig.trustCloudFrontIps === true &&
       JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)
     ) {
       // Check if all new IPs are CloudFront IPs
@@ -216,20 +228,35 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
       shouldSkipAlert = allCloudFrontIPs.every((isCloudFront) => isCloudFront);
     }
 
+    // Always validate certificates
+    const { isExpected, certInfo } = await validateCertificates(
+      domain,
+      currentIPs,
+      env
+    );
+
+    const now = new Date();
+    let ipChanged = false;
+    let certChanged = false;
+    let needsUpdate = false;
+
     // If the IPs have changed
     if (JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)) {
-      await env.DNS_KV.put(`dns:${domain}:state`, "resolved");
-      await env.DNS_KV.put(`dns:${domain}:ips`, currentIPs.join(","));
-      await env.DNS_KV.put(`dns:${domain}:serial`, serial);
+      ipChanged = true;
+      domainState.state = "resolved";
+      domainState.ips = currentIPs.join(",");
+      domainState.serial = serial;
+      domainState.lastIpChange = now.toISOString();
+      needsUpdate = true;
 
-      if (!shouldSkipAlert) {
+      if (!shouldSkipAlert && !domainConfig.suppressIpChangeAlerts) {
         const message =
-          `🚨 <b>DNS Change Detected</b>\n\n` +
+          `⚠️ <b>DNS IP Change Detected</b>\n\n` +
           `Domain: <code>${domain}</code>\n` +
-          `Previous IPs: <code>${previousIPs || "none"}</code>\n` +
+          `Previous IPs: <code>${domainState.ips || "none"}</code>\n` +
           `New IPs: <code>${currentIPs.join(", ")}</code>\n` +
           `TTL: <code>${aRecords[0]?.TTL || "N/A"}</code>\n` +
-          `Time: ${new Date().toISOString()}\n\n` +
+          `Time: ${now.toISOString()}\n\n` +
           `<b>Technical Details:</b>\n` +
           `- DNS Status: <code>${dnsData.Status}</code>\n` +
           `- Record Type: <code>A</code>\n` +
@@ -239,23 +266,112 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
           `- Admin Email: <code>${soaData[1] || "unknown"}</code>`;
 
         await sendTelegramMessage(env, message);
-        console.log(`DNS change detected for ${domain}:`);
-        console.log(`Previous IPs: ${previousIPs || "none"}`);
+        console.log(`DNS IP change detected for ${domain}:`);
+        console.log(`Previous IPs: ${domainState.ips || "none"}`);
         console.log(`New IPs: ${currentIPs.join(", ")}`);
-        console.log(`SOA Serial: ${serial}`);
-        console.log(`Timestamp: ${new Date().toISOString()}`);
+      } else if (domainConfig.suppressIpChangeAlerts) {
+        console.log(`Suppressing IP change alert for ${domain} as configured`);
+      }
+    }
+
+    // Check for certificate changes
+    if (!isExpected && certInfo) {
+      certChanged = true;
+      domainState.lastCertChange = now.toISOString();
+      domainState.baselineCert = certInfo;
+      needsUpdate = true;
+
+      if (!domainConfig.suppressCertAlerts) {
+        const message =
+          `🚨 <b>Unexpected Certificate Change</b>\n\n` +
+          `Domain: <code>${domain}</code>\n` +
+          `Time: ${now.toISOString()}\n\n` +
+          `<b>Current Certificate:</b>\n` +
+          `- Issuer: <code>${certInfo.issuer}</code>\n` +
+          `- Subject: <code>${certInfo.subject}</code>\n` +
+          `- Valid From: <code>${certInfo.validFrom}</code>\n` +
+          `- Valid To: <code>${certInfo.validTo}</code>\n` +
+          `- Fingerprint: <code>${certInfo.fingerprint}</code>\n` +
+          (domainState.baselineCert
+            ? `\n<b>Previous Certificate:</b>\n` +
+              `- Issuer: <code>${domainState.baselineCert.issuer}</code>\n` +
+              `- Subject: <code>${domainState.baselineCert.subject}</code>\n` +
+              `- Fingerprint: <code>${domainState.baselineCert.fingerprint}</code>\n`
+            : `\n<b>Previous Certificate:</b> None recorded\n`);
+
+        await sendTelegramMessage(env, message);
+        console.log(`Unexpected certificate change detected for ${domain}`);
       } else {
         console.log(
-          `Skipping alert for ${domain} as all new IPs are CloudFront IPs`
+          `Suppressing certificate alert for ${domain} as configured`
         );
       }
-    } else if (serial !== previousSerial) {
-      // Only notify on SOA changes if IPs haven't changed
-      // This catches cases where other record types changed
-      await env.DNS_KV.put(`dns:${domain}:serial`, serial);
+    }
 
-      // Skip SOA alert if suppression is enabled
-      if (env.SUPPRESS_SOA_ALERTS === "true") {
+    // Check for critical changes (both IP and cert changed within window)
+    if (ipChanged && certChanged && domainConfig.criticalChangeWindowMinutes) {
+      const windowMs = domainConfig.criticalChangeWindowMinutes * 60 * 1000;
+      const lastIpChange = domainState.lastIpChange
+        ? new Date(domainState.lastIpChange)
+        : null;
+      const lastCertChange = domainState.lastCertChange
+        ? new Date(domainState.lastCertChange)
+        : null;
+      const timeSinceLastIpChange = lastIpChange
+        ? now.getTime() - lastIpChange.getTime()
+        : Infinity;
+      const timeSinceLastCertChange = lastCertChange
+        ? now.getTime() - lastCertChange.getTime()
+        : Infinity;
+
+      if (
+        timeSinceLastIpChange <= windowMs &&
+        timeSinceLastCertChange <= windowMs
+      ) {
+        const message =
+          `🚨🚨 <b>CRITICAL: Concurrent IP and Certificate Changes</b>\n\n` +
+          `Domain: <code>${domain}</code>\n` +
+          `Time: ${now.toISOString()}\n\n` +
+          `<b>IP Change:</b>\n` +
+          `- Previous IPs: <code>${domainState.ips || "none"}</code>\n` +
+          `- New IPs: <code>${currentIPs.join(", ")}</code>\n\n` +
+          `<b>Certificate Change:</b>\n` +
+          `- Current Issuer: <code>${certInfo?.issuer || "unknown"}</code>\n` +
+          `- Current Subject: <code>${
+            certInfo?.subject || "unknown"
+          }</code>\n` +
+          `- Current Fingerprint: <code>${
+            certInfo?.fingerprint || "unknown"
+          }</code>\n` +
+          (domainState.baselineCert
+            ? `\n<b>Previous Certificate:</b>\n` +
+              `- Issuer: <code>${domainState.baselineCert.issuer}</code>\n` +
+              `- Subject: <code>${domainState.baselineCert.subject}</code>\n` +
+              `- Fingerprint: <code>${domainState.baselineCert.fingerprint}</code>\n`
+            : `\n<b>Previous Certificate:</b> None recorded\n`) +
+          `\n<b>Technical Details:</b>\n` +
+          `- Time Window: <code>${domainConfig.criticalChangeWindowMinutes} minutes</code>\n` +
+          `- Last IP Change: <code>${
+            lastIpChange?.toISOString() || "unknown"
+          }</code>\n` +
+          `- Last Cert Change: <code>${
+            lastCertChange?.toISOString() || "unknown"
+          }</code>`;
+
+        await sendTelegramMessage(env, message);
+        console.log(
+          `CRITICAL: Concurrent IP and certificate changes detected for ${domain}`
+        );
+      }
+    }
+
+    // Handle SOA changes if IPs haven't changed
+    if (serial !== domainState.serial && !ipChanged) {
+      domainState.serial = serial;
+      needsUpdate = true;
+
+      // Skip SOA alert if suppression is enabled for this domain (default to true)
+      if (domainConfig.suppressNonIpSoaAlerts !== false) {
         console.log(`Suppressing SOA alert for ${domain} as configured`);
         return;
       }
@@ -263,9 +379,9 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
       const message =
         `📝 <b>DNS Zone Updated</b>\n\n` +
         `Domain: <code>${domain}</code>\n` +
-        `Previous Serial: <code>${previousSerial || "unknown"}</code>\n` +
+        `Previous Serial: <code>${domainState.serial || "unknown"}</code>\n` +
         `New Serial: <code>${serial}</code>\n` +
-        `Time: ${new Date().toISOString()}\n\n` +
+        `Time: ${now.toISOString()}\n\n` +
         `<b>Technical Details:</b>\n` +
         `- DNS Status: <code>${dnsData.Status}</code>\n` +
         `- Record Type: <code>SOA</code>\n` +
@@ -278,12 +394,17 @@ async function checkDomain(domain: string, env: Env): Promise<void> {
 
       await sendTelegramMessage(env, message);
       console.log(`SOA record updated for ${domain}:`);
-      console.log(`Previous Serial: ${previousSerial || "unknown"}`);
+      console.log(`Previous Serial: ${domainState.serial || "unknown"}`);
       console.log(`New Serial: ${serial}`);
-    } else {
+    } else if (!ipChanged) {
       console.log(
         `No change detected for ${domain} (IPs: ${currentIPs.join(", ")})`
       );
+    }
+
+    // Only write to KV if there were changes
+    if (needsUpdate) {
+      await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
     }
   } catch (error: unknown) {
     const errorMessage =
@@ -345,14 +466,15 @@ export default {
       return;
     }
 
-    // Split the domains string into an array and trim whitespace
-    const domains = env.MONITOR_DOMAINS.split(",").map((domain) =>
-      domain.trim()
+    // Get the config
+    const configResponse = await fetch(
+      "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips"
     );
+    const config: Config = await configResponse.json();
 
     // Check each domain
-    for (const domain of domains) {
-      await checkDomain(domain, env);
+    for (const domainConfig of config.domains) {
+      await checkDomain(domainConfig.name, domainConfig, env);
     }
   },
 

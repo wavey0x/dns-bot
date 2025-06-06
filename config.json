@@ -1,19 +1,64 @@
 {
   "domains": [
-    "yearn.fi",
-    "yearn.finance",
-    "curve.fi",
-    "curve.finance",
-    "resupply.fi",
-    "convexfinance.com",
-    "safe-transaction-mainnet.safe.global",
-    "safe.global",
-    "app.safe.global"
+    {
+      "name": "yearn.fi",
+      "suppressNonIpSoaAlerts": true,
+      "trustCloudFrontIps": false,
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "yearn.finance",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "curve.fi",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "curve.finance",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "resupply.fi",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "convexfinance.com",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": false,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "safe-transaction-mainnet.safe.global",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": true,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "safe.global",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": true,
+      "criticalChangeWindowMinutes": 10
+    },
+    {
+      "name": "app.safe.global",
+      "suppressCertAlerts": false,
+      "suppressIpChangeAlerts": true,
+      "criticalChangeWindowMinutes": 10
+    }
   ],
   "cron": "* * * * *",
   "kvNamespace": {
     "id": "860d4c5cb9384e1cab56e7e70504d765"
-  },
-  "suppressSOAAlerts": true,
-  "trustCloudFrontIps": true
+  }
 }

@@ -112,3 +112,39 @@ To view the logs for your deployed worker:
     6. Set the **Account Resources** to **All accounts**
     7. Set the **Zone Resources** to **All zones**
     8. Click **Continue to summary** and then **Create Token**
+
+## Certificate Validation Logic
+
+The bot includes a robust certificate validation mechanism to detect potential malicious DNS/IP changes. Here's how it works:
+
+1. **IP Change Detection:**
+
+   - The bot monitors DNS records for changes in IP addresses.
+   - When an IP change is detected, the bot fetches the new certificate from the new IP.
+
+2. **Certificate Validation:**
+
+   - The bot compares the new certificate with a baseline certificate stored in KV.
+   - The baseline certificate is the last known valid certificate for the domain.
+   - If the new certificate doesn't match the baseline, the bot flags it as unexpected.
+
+3. **Certificate Details Checked:**
+
+   - **Fingerprint:** Ensures the certificate hasn't been tampered with.
+   - **Subject/SAN:** Verifies the certificate is issued for the expected domain.
+   - **Issuer:** Optionally checks if the certificate is from a trusted CA.
+   - **Validity Period:** Ensures the certificate is currently valid.
+
+4. **Alerting:**
+
+   - If the certificate is unexpected, the bot sends an alert with details:
+     - New certificate's issuer, subject, validity, and fingerprint.
+     - Baseline certificate's details (if available).
+   - This helps identify potential MITM attacks or hijacking attempts.
+
+5. **Best Practices:**
+   - **Combine Checks:** Use fingerprint, subject/SAN, and issuer checks for robust validation.
+   - **Baseline Updates:** Allow baseline updates for legitimate certificate renewals.
+   - **Alert Context:** Provide context in alerts to distinguish between legitimate and suspicious changes.
+
+This certificate validation logic adds an extra layer of security to your DNS monitoring, ensuring that not only IP changes but also certificate changes are monitored for potential threats.
