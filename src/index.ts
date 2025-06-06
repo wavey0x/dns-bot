@@ -376,26 +376,32 @@ async function checkDomain(
         return;
       }
 
+      // Parse SOA data more carefully
+      const soaFields =
+        soaData.length >= 7 ? soaData : Array(7).fill("unknown");
+      const [primaryNS, adminEmail, serialNum, refresh, retry, expire, minTTL] =
+        soaFields;
+
       const message =
         `📝 <b>DNS Zone Updated</b>\n\n` +
         `Domain: <code>${domain}</code>\n` +
         `Previous Serial: <code>${domainState.serial || "unknown"}</code>\n` +
-        `New Serial: <code>${serial}</code>\n` +
+        `New Serial: <code>${serialNum || "unknown"}</code>\n` +
         `Time: ${now.toISOString()}\n\n` +
         `<b>Technical Details:</b>\n` +
         `- DNS Status: <code>${dnsData.Status}</code>\n` +
         `- Record Type: <code>SOA</code>\n` +
-        `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
-        `- Admin Email: <code>${soaData[1] || "unknown"}</code>\n` +
-        `- Refresh: <code>${soaData[3] || "unknown"}</code>\n` +
-        `- Retry: <code>${soaData[4] || "unknown"}</code>\n` +
-        `- Expire: <code>${soaData[5] || "unknown"}</code>\n` +
-        `- Min TTL: <code>${soaData[6] || "unknown"}</code>`;
+        `- Primary NS: <code>${primaryNS}</code>\n` +
+        `- Admin Email: <code>${adminEmail}</code>\n` +
+        `- Refresh: <code>${refresh}</code>\n` +
+        `- Retry: <code>${retry}</code>\n` +
+        `- Expire: <code>${expire}</code>\n` +
+        `- Min TTL: <code>${minTTL}</code>`;
 
       await sendTelegramMessage(env, message);
       console.log(`SOA record updated for ${domain}:`);
       console.log(`Previous Serial: ${domainState.serial || "unknown"}`);
-      console.log(`New Serial: ${serial}`);
+      console.log(`New Serial: ${serialNum || "unknown"}`);
     } else if (!ipChanged) {
       console.log(
         `No change detected for ${domain} (IPs: ${currentIPs.join(", ")})`
