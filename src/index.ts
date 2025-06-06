@@ -7,6 +7,7 @@ import {
   Config,
 } from "./types";
 import { checkCertificate, validateCertificates } from "./cert-utils";
+import config from "../config.json";
 
 async function sendTelegramMessage(env: Env, message: string): Promise<void> {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -29,7 +30,9 @@ async function sendTelegramMessage(env: Env, message: string): Promise<void> {
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((val, index) => val === b[index]);
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((val, index) => val === sortedB[index]);
 }
 
 async function queryDNS(domain: string): Promise<DNSResponse> {
@@ -54,6 +57,10 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
   const domainState = domainStateStr
     ? (JSON.parse(domainStateStr) as DomainState)
     : null;
+
+  if (domainState && domainState.ips) {
+    domainState.ips = [...domainState.ips].sort();
+  }
 
   // Initialize state if it doesn't exist
   if (!domainState) {
@@ -82,12 +89,14 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
     return;
   }
 
-  // Get current IPs from A records
-  const currentIps =
+  // Get current IPs from A records and sort them
+  const currentIps = (
     dnsData.Answer?.filter((record) => record.type === 1).map(
       (record) => record.data
-    ) || [];
-  const ipChanged = !arraysEqual(currentIps, domainState.ips);
+    ) || []
+  ).sort();
+  const previousIps = (domainState.ips || []).sort();
+  const ipChanged = !arraysEqual(currentIps, previousIps);
 
   // Get SOA serial
   const soaData =
@@ -105,7 +114,22 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       isExpected,
       certInfo: newCertInfo,
       certChanged: newCertChanged,
+      certCriticalError,
     } = await validateCertificates(domain, currentIps, domainState);
+
+    if (certCriticalError) {
+      const message =
+        `🚨 <b>CRITICAL: Certificate Validation Error</b>\n\n` +
+        `Domain: <code>${domain}</code>\n` +
+        `Time: ${new Date().toISOString()}\n` +
+        `Error: <code>${certCriticalError}</code>\n`;
+      await sendTelegramMessage(env, message);
+      console.log(
+        `[${domain}] CRITICAL: Certificate validation error: ${certCriticalError}`
+      );
+      return;
+    }
+
     if (!isExpected && newCertInfo) {
       certChanged = newCertChanged;
       certInfo = newCertInfo;
@@ -139,7 +163,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
 
   // Handle IP changes
   if (ipChanged) {
-    domainState.ips = currentIps;
+    domainState.ips = [...currentIps].sort();
     domainState.lastIpChange = new Date().toISOString();
     needsUpdate = true;
 
@@ -147,7 +171,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       const message =
         `⚠️ <b>DNS IP Change Detected</b>\n\n` +
         `Domain: <code>${domain}</code>\n` +
-        `Previous IPs: <code>${domainState.ips.join(", ") || "none"}</code>\n` +
+        `Previous IPs: <code>${previousIps.join(", ") || "none"}</code>\n` +
         `New IPs: <code>${currentIps.join(", ")}</code>\n` +
         `Time: ${new Date().toISOString()}\n\n` +
         `<b>Technical Details:</b>\n` +
@@ -159,7 +183,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       await sendTelegramMessage(env, message);
       console.log(
         `[${domain}] IPs changed: ${
-          domainState.ips.join(", ") || "none"
+          previousIps.join(", ") || "none"
         } -> ${currentIps.join(", ")}`
       );
     }
@@ -275,23 +299,10 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
-    if (!env.MONITOR_DOMAINS) {
-      console.error("MONITOR_DOMAINS environment variable is not set");
-      return;
-    }
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
       console.error(
         "Telegram configuration is missing. Please set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
       );
-      return;
-    }
-
-    // Parse the config from the environment variable
-    let config: Config;
-    try {
-      config = JSON.parse(env.MONITOR_DOMAINS);
-    } catch (e) {
-      console.error("Failed to parse MONITOR_DOMAINS:", e);
       return;
     }
 

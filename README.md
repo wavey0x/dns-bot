@@ -1,8 +1,8 @@
 # DNS Monitor Bot
 
-A simple to configure, pre-built Cloudflare Worker that monitors DNS records for any list of user-specified domains and sends notifications via Telegram when changes are detected.
+A simple, pre-built Cloudflare Worker that monitors DNS records and TLS certificates for any list of user-specified domains and sends notifications via Telegram when changes are detected.
 
-The project is designed to stay comfortably within Cloudflare's free tier for it's Worker and KV storage services.
+The project is designed to stay comfortably within Cloudflare's free tier for its Worker and KV storage services.
 
 <p align="center">
   <img src="images/example_alert.png" alt="Example alert" />
@@ -39,22 +39,35 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
      cp .env.example .env
      ```
 
-   - Supply the same variables and values as github actions secrets within your repository's settings.[^1]
+   - Supply the same variables and values as GitHub Actions secrets within your repository's settings.[^1]
 
-   - Update `config.json` with your settings:
+   - Update `config.json` with your settings. The config file is now read directly by the Worker (no need for environment variable secrets for domain config):
 
      ```json
      {
-       "domains": ["domain1.com", "domain2.com"],
+       "domains": [
+         {
+           "name": "domain1.com",
+           "suppressNonIpSoaAlerts": true,
+           "suppressCertAlerts": false,
+           "suppressIpChangeAlerts": false,
+           "criticalChangeWindowMinutes": 10
+         },
+         {
+           "name": "domain2.com",
+           "suppressCertAlerts": false,
+           "suppressIpChangeAlerts": false,
+           "criticalChangeWindowMinutes": 10
+         }
+       ],
        "cron": "*/5 * * * *",
        "kvNamespace": {
          "id": "your-kv-namespace-id"
-       },
-       "suppressSOAAlerts": true
+       }
      }
      ```
 
-   > **Note:** Each domain you want to monitor must be explicitly listed in the `domains` array. Subdomains are not automatically monitored - if you want to monitor a subdomain, add it to the list (e.g., `["domain.com", "sub.domain.com"]`).
+   > **Note:** Each domain you want to monitor must be explicitly listed in the `domains` array. Subdomains are not automatically monitored - if you want to monitor a subdomain, add it to the list (e.g., `"name": "sub.domain.com"`).
 
    - Get your Cloudflare API token[^2]
 
@@ -112,38 +125,45 @@ To view the logs for your deployed worker:
     7. Set the **Zone Resources** to **All zones**
     8. Click **Continue to summary** and then **Create Token**
 
-## Certificate Validation Logic
+## Certificate and DNS Change Detection Logic
 
-The bot includes a robust certificate validation mechanism to detect potential malicious DNS/IP changes. Here's how it works:
+The bot includes robust logic to detect both DNS and certificate changes for your domains:
 
 1. **IP Change Detection:**
 
-   - The bot monitors DNS records for changes in IP addresses.
-   - When an IP change is detected, the bot fetches the new certificate from the new IP.
+   - The bot monitors DNS A records for each domain.
+   - IP addresses are always sorted before comparison to avoid false positives due to order changes.
+   - When an IP change is detected, the bot sends an alert with before/after details.
 
 2. **Certificate Validation:**
 
-   - The bot compares the new certificate with a baseline certificate stored in KV.
-   - The baseline certificate is the last known valid certificate for the domain.
-   - If the new certificate doesn't match the baseline, the bot flags it as unexpected.
+   - On every run, the bot connects to the domain's IP and retrieves the TLS certificate.
+   - The certificate is compared to a baseline (the last known valid certificate) stored in KV.
+   - If the certificate changes unexpectedly, a high-severity alert is sent.
+   - If the certificate is invalid or cannot be retrieved, a critical alert is sent immediately.
 
-3. **Certificate Details Checked:**
+3. **SOA Change Detection:**
 
-   - **Fingerprint:** Ensures the certificate hasn't been tampered with.
-   - **Subject/SAN:** Verifies the certificate is issued for the expected domain.
-   - **Issuer:** Optionally checks if the certificate is from a trusted CA.
-   - **Validity Period:** Ensures the certificate is currently valid.
+   - The bot also checks the SOA serial for the domain.
+   - If the SOA serial changes (and IPs have not changed), an alert is sent (unless suppressed by config).
 
-4. **Alerting:**
+4. **Critical Change Window:**
 
-   - If the certificate is unexpected, the bot sends an alert with details:
-     - New certificate's issuer, subject, validity, and fingerprint.
-     - Baseline certificate's details (if available).
-   - This helps identify potential MITM attacks or hijacking attempts.
+   - If both an IP change and a certificate change occur within a configurable time window, a critical alert is sent.
 
-5. **Best Practices:**
-   - **Combine Checks:** Use fingerprint, subject/SAN, and issuer checks for robust validation.
-   - **Baseline Updates:** Allow baseline updates for legitimate certificate renewals.
-   - **Alert Context:** Provide context in alerts to distinguish between legitimate and suspicious changes.
+5. **Alerting:**
 
-This certificate validation logic adds an extra layer of security to your DNS monitoring, ensuring that not only IP changes but also certificate changes are monitored for potential threats.
+   - Alerts are sent via Telegram with clear before/after information and technical details.
+   - You can suppress certain alerts (e.g., SOA, IP, or certificate) per domain in the config.
+
+6. **No CloudFront Logic:**
+   - All CloudFront-specific logic and configuration have been removed. The bot now works for any domain and does not treat CloudFront IPs specially.
+
+## Best Practices
+
+- **Monitor all critical domains and subdomains.**
+- **Review alerts promptly** to catch potential DNS hijacking or certificate issues.
+- **Update the baseline certificate** in KV if you perform a legitimate certificate renewal.
+- **Keep your config.json up to date** with all domains you want to monitor.
+
+This bot adds an extra layer of security to your DNS monitoring, ensuring that both IP and certificate changes are tracked and alerted on for potential threats.

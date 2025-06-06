@@ -161,20 +161,6 @@ async function setupTelegramSecrets() {
   }
 }
 
-// Set up MONITOR_DOMAINS from config.json
-async function setupMonitorDomains() {
-  const config = JSON.parse(
-    fs.readFileSync(path.join(__dirname, "../config.json"), "utf8")
-  );
-  const domains = config.domains.join(",");
-
-  console.log("ℹ️ Setting MONITOR_DOMAINS from config.json");
-  runCommand(
-    `echo '${domains}' | npx wrangler secret put MONITOR_DOMAINS`,
-    "Failed to set MONITOR_DOMAINS"
-  );
-}
-
 // Main deployment process
 async function deploy() {
   console.log("🚀 Starting deployment process...\n");
@@ -186,7 +172,6 @@ async function deploy() {
   // Set up configuration
   await setupKVNamespace();
   await setupTelegramSecrets();
-  await setupMonitorDomains();
   updateWranglerConfig();
 
   // Deploy
