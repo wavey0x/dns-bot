@@ -38,11 +38,6 @@ export interface CertificateInfo {
   fingerprint: string;
 }
 
-export interface CloudFrontIPResponse {
-  CLOUDFRONT_GLOBAL_IP_LIST: string[];
-  CLOUDFRONT_REGIONAL_EDGE_IP_LIST: string[];
-}
-
 export interface DomainConfig {
   name: string;
   suppressNonIpSoaAlerts?: boolean;

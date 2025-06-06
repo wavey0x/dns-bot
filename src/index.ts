@@ -2,23 +2,11 @@ import {
   Env,
   CertificateInfo,
   DNSResponse,
-  CloudFrontIPResponse,
   DomainConfig,
   DomainState,
   Config,
 } from "./types";
 import { checkCertificate, validateCertificates } from "./cert-utils";
-
-function ipToNumber(ip: string): number {
-  return (
-    ip
-      .split(".")
-      .reduce(
-        (acc: number, octet: string) => (acc << 8) + parseInt(octet),
-        0
-      ) >>> 0
-  );
-}
 
 async function sendTelegramMessage(env: Env, message: string): Promise<void> {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -39,72 +27,26 @@ async function sendTelegramMessage(env: Env, message: string): Promise<void> {
   }
 }
 
-async function queryDNS(domain: string): Promise<DNSResponse> {
-  const server = "https://1.1.1.1/dns-query";
-  const url = new URL(server);
-  url.searchParams.append("name", domain);
-  url.searchParams.append("type", "SOA"); // First query SOA record
-
-  console.log(`Querying DNS server for SOA: ${url.toString()}`);
-
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/dns-json",
-    },
-  });
-
-  console.log(`Response status:`, response.status);
-  const responseHeaders: Record<string, string> = {};
-  response.headers.forEach((value, key) => {
-    responseHeaders[key] = value;
-  });
-  console.log("Response headers:", JSON.stringify(responseHeaders, null, 2));
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`DNS query failed: ${response.status} - ${errorText}`);
-  }
-
-  const soaData: DNSResponse = await response.json();
-  console.log("SOA Response data:", JSON.stringify(soaData, null, 2));
-
-  // Now query A records
-  url.searchParams.set("type", "A");
-  console.log(`Querying DNS server for A records: ${url.toString()}`);
-
-  const aResponse = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/dns-json",
-    },
-  });
-
-  if (!aResponse.ok) {
-    const errorText = await aResponse.text();
-    throw new Error(`DNS query failed: ${aResponse.status} - ${errorText}`);
-  }
-
-  const aData: DNSResponse = await aResponse.json();
-  console.log("A Record Response data:", JSON.stringify(aData, null, 2));
-
-  // Combine both responses
-  return {
-    ...aData,
-    Answer: [...(aData.Answer || []), ...(soaData.Answer || [])],
-  };
-}
-
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
-  const sortedA = [...a].sort();
-  const sortedB = [...b].sort();
-  return sortedA.every((val, index) => val === sortedB[index]);
+  return a.every((val, index) => val === b[index]);
+}
+
+async function queryDNS(domain: string): Promise<DNSResponse> {
+  // Using Cloudflare's 1.1.1.1 DNS service for reliable DNS queries
+  const response = await fetch(
+    `https://1.1.1.1/dns-query?name=${domain}&type=A`,
+    {
+      headers: {
+        accept: "application/dns-json",
+      },
+    }
+  );
+  return response.json();
 }
 
 async function checkDomain(env: Env, domainConfig: DomainConfig) {
   const domain = domainConfig.name;
-  console.log(`Querying DNS server for SOA: ${domain}`);
   const dnsData = await queryDNS(domain);
 
   // Get current domain state from KV
@@ -124,7 +66,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       baselineCert: null,
     };
     await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(newState));
-    console.log(`Initialized state for ${domain}`);
+    console.log(`[${domain}] Initialized state`);
     return;
   }
 
@@ -135,7 +77,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       domainState.ips = [];
       domainState.serial = null;
       await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
-      console.log(`Domain ${domain} is now unreachable`);
+      console.log(`[${domain}] Domain unreachable`);
     }
     return;
   }
@@ -190,11 +132,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
             : `\n<b>Previous Certificate:</b> None recorded\n`);
 
         await sendTelegramMessage(env, message);
-        console.log(`Unexpected certificate change detected for ${domain}`);
-      } else {
-        console.log(
-          `Suppressing certificate alert for ${domain} as configured`
-        );
+        console.log(`[${domain}] Certificate changed: ${newCertInfo.issuer}`);
       }
     }
   }
@@ -204,7 +142,6 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
     domainState.ips = currentIps;
     domainState.lastIpChange = new Date().toISOString();
     needsUpdate = true;
-    console.log(`IPs changed for ${domain}:`, currentIps);
 
     if (!domainConfig.suppressIpChangeAlerts) {
       const message =
@@ -220,11 +157,11 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
         `- SOA Serial: <code>${serial || "unknown"}</code>`;
 
       await sendTelegramMessage(env, message);
-      console.log(`DNS IP change detected for ${domain}:`);
-      console.log(`Previous IPs: ${domainState.ips.join(", ") || "none"}`);
-      console.log(`New IPs: ${currentIps.join(", ")}`);
-    } else {
-      console.log(`Suppressing IP change alert for ${domain} as configured`);
+      console.log(
+        `[${domain}] IPs changed: ${
+          domainState.ips.join(", ") || "none"
+        } -> ${currentIps.join(", ")}`
+      );
     }
   }
 
@@ -235,7 +172,6 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
 
     // Skip SOA alert if suppression is enabled for this domain (default to true)
     if (domainConfig.suppressNonIpSoaAlerts !== false) {
-      console.log(`Suppressing SOA alert for ${domain} as configured`);
       return;
     }
 
@@ -261,12 +197,10 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
       `- Min TTL: <code>${minTTL}</code>`;
 
     await sendTelegramMessage(env, message);
-    console.log(`SOA record updated for ${domain}:`);
-    console.log(`Previous Serial: ${domainState.serial || "unknown"}`);
-    console.log(`New Serial: ${serialNum || "unknown"}`);
-  } else if (!ipChanged) {
     console.log(
-      `No change detected for ${domain} (IPs: ${currentIps.join(", ")})`
+      `[${domain}] SOA updated: ${domainState.serial || "unknown"} -> ${
+        serialNum || "unknown"
+      }`
     );
   }
 
@@ -322,7 +256,7 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
 
       await sendTelegramMessage(env, message);
       console.log(
-        `CRITICAL: Concurrent IP and certificate changes detected for ${domain}`
+        `[${domain}] CRITICAL: IP and certificate changed within ${domainConfig.criticalChangeWindowMinutes} minutes`
       );
     }
   }
@@ -330,32 +264,9 @@ async function checkDomain(env: Env, domainConfig: DomainConfig) {
   // Save state if there were changes
   if (needsUpdate) {
     await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
+  } else {
+    console.log(`[${domain}] No changes detected`);
   }
-}
-
-async function testCloudFrontIPCheck() {
-  const testIP = "3.166.244.103";
-  const testRange = "3.166.0.0/15";
-
-  // Convert IP to number
-  const ipNum = ipToNumber(testIP);
-
-  // Convert range to number and mask
-  const [baseIP, bits] = testRange.split("/");
-  const baseNum = ipToNumber(baseIP);
-  const mask = ~((1 << (32 - parseInt(bits))) - 1) >>> 0;
-
-  // Check if IP is in range
-  const isInRange = (ipNum & mask) === (baseNum & mask);
-
-  console.log(`Testing IP range check:`);
-  console.log(`IP: ${testIP} (${ipNum})`);
-  console.log(`Range: ${testRange}`);
-  console.log(`Base IP: ${baseIP} (${baseNum})`);
-  console.log(`Mask: ${mask.toString(2)}`);
-  console.log(`Is in range: ${isInRange}`);
-
-  return isInRange;
 }
 
 export default {
@@ -368,7 +279,6 @@ export default {
       console.error("MONITOR_DOMAINS environment variable is not set");
       return;
     }
-
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
       console.error(
         "Telegram configuration is missing. Please set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
@@ -376,13 +286,15 @@ export default {
       return;
     }
 
-    // Get the config
-    const configResponse = await fetch(
-      "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips"
-    );
-    const config: Config = await configResponse.json();
+    // Parse the config from the environment variable
+    let config: Config;
+    try {
+      config = JSON.parse(env.MONITOR_DOMAINS);
+    } catch (e) {
+      console.error("Failed to parse MONITOR_DOMAINS:", e);
+      return;
+    }
 
-    // Check each domain
     for (const domainConfig of config.domains) {
       await checkDomain(env, domainConfig);
     }
@@ -394,14 +306,6 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<Response> {
-    // Add test endpoint
-    if (request.url.endsWith("/test-ip-range")) {
-      const result = await testCloudFrontIPCheck();
-      return new Response(JSON.stringify({ result }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     return new Response(
       "DNS Monitor Worker is running. This worker is triggered by cron.",
       {

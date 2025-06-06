@@ -50,8 +50,7 @@ The project is designed to stay comfortably within Cloudflare's free tier for it
        "kvNamespace": {
          "id": "your-kv-namespace-id"
        },
-       "suppressSOAAlerts": true,
-       "trustCloudFrontIps": true
+       "suppressSOAAlerts": true
      }
      ```
 
