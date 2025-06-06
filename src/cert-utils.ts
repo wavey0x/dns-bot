@@ -1,4 +1,4 @@
-import { Env, CertificateInfo } from "./types";
+import { Env, CertificateInfo, DomainState } from "./types";
 import * as tls from "node:tls";
 
 export async function checkCertificate(
@@ -42,33 +42,34 @@ export async function checkCertificate(
 
 export async function validateCertificates(
   domain: string,
-  newIPs: string[],
-  env: Env
+  ips: string[],
+  domainState: DomainState
 ): Promise<{
   isExpected: boolean;
   certInfo: CertificateInfo | null;
+  certChanged: boolean;
 }> {
-  // Get domain state from KV
-  const domainStateStr = await env.DNS_KV.get(`dns:${domain}`);
-  const domainState = domainStateStr ? JSON.parse(domainStateStr) : null;
-  const baselineCert = domainState?.baselineCert || null;
+  if (ips.length === 0) {
+    return { isExpected: true, certInfo: null, certChanged: false };
+  }
 
-  // Check certificate for first IP (assuming all IPs have same cert)
-  const certInfo = await checkCertificate(domain, newIPs[0]);
+  // Check certificate for the first IP
+  const certInfo = await checkCertificate(domain, ips[0]);
   if (!certInfo) {
-    return { isExpected: false, certInfo: null };
+    return { isExpected: true, certInfo: null, certChanged: false };
   }
 
-  // If no baseline, this is first check
-  if (!baselineCert) {
-    return { isExpected: true, certInfo };
+  // If we have a baseline certificate, compare with it
+  if (domainState.baselineCert) {
+    const isExpected =
+      certInfo.fingerprint === domainState.baselineCert.fingerprint;
+    return {
+      isExpected,
+      certInfo,
+      certChanged: !isExpected,
+    };
   }
 
-  // Compare with baseline
-  const isExpected =
-    certInfo.issuer === baselineCert.issuer &&
-    certInfo.subject === baselineCert.subject &&
-    certInfo.fingerprint === baselineCert.fingerprint;
-
-  return { isExpected, certInfo };
+  // No baseline certificate, this is our first check
+  return { isExpected: true, certInfo, certChanged: false };
 }

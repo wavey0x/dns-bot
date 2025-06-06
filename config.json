@@ -3,7 +3,6 @@
     {
       "name": "yearn.fi",
       "suppressNonIpSoaAlerts": true,
-      "trustCloudFrontIps": false,
       "suppressCertAlerts": false,
       "suppressIpChangeAlerts": false,
       "criticalChangeWindowMinutes": 10

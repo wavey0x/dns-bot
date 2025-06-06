@@ -1,37 +1,13 @@
 import {
   Env,
-  DNSResponse,
-  KVNamespace,
   CertificateInfo,
+  DNSResponse,
   CloudFrontIPResponse,
+  DomainConfig,
+  DomainState,
+  Config,
 } from "./types";
 import { checkCertificate, validateCertificates } from "./cert-utils";
-
-interface DomainConfig {
-  name: string;
-  suppressNonIpSoaAlerts?: boolean;
-  trustCloudFrontIps?: boolean;
-  suppressCertAlerts?: boolean;
-  suppressIpChangeAlerts?: boolean;
-  criticalChangeWindowMinutes?: number;
-}
-
-interface Config {
-  domains: DomainConfig[];
-  cron: string;
-  kvNamespace: {
-    id: string;
-  };
-}
-
-interface DomainState {
-  state: string;
-  ips: string;
-  serial: string;
-  lastIpChange: string | null;
-  lastCertChange: string | null;
-  baselineCert: CertificateInfo | null;
-}
 
 function ipToNumber(ip: string): number {
   return (
@@ -119,179 +95,93 @@ async function queryDNS(domain: string): Promise<DNSResponse> {
   };
 }
 
-async function isCloudFrontIP(ip: string): Promise<boolean> {
-  try {
-    const response = await fetch(
-      "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips"
-    );
-    if (!response.ok) {
-      console.error("Failed to fetch CloudFront IP ranges");
-      return false;
-    }
-
-    const data = (await response.json()) as CloudFrontIPResponse;
-    const ipRanges = [
-      ...data.CLOUDFRONT_GLOBAL_IP_LIST,
-      ...data.CLOUDFRONT_REGIONAL_EDGE_IP_LIST,
-    ];
-
-    // Convert IP to number for comparison
-    const ipNum = ipToNumber(ip);
-
-    // Check if IP is in any of the ranges
-    return ipRanges.some((range) => {
-      const [baseIP, bits] = range.split("/");
-      const baseNum = ipToNumber(baseIP);
-      const mask = ~((1 << (32 - parseInt(bits))) - 1) >>> 0;
-      return (ipNum & mask) === (baseNum & mask);
-    });
-  } catch (error) {
-    console.error("Error checking CloudFront IP:", error);
-    return false;
-  }
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((val, index) => val === sortedB[index]);
 }
 
-async function checkDomain(
-  domain: string,
-  domainConfig: DomainConfig,
-  env: Env
-): Promise<void> {
-  try {
-    const dnsData = await queryDNS(domain);
+async function checkDomain(env: Env, domainConfig: DomainConfig) {
+  const domain = domainConfig.name;
+  console.log(`Querying DNS server for SOA: ${domain}`);
+  const dnsData = await queryDNS(domain);
 
-    // Check for "No Reachable Authority" case
-    const noAuthority = dnsData.Comment?.some((comment) =>
-      comment.includes("No Reachable Authority")
-    );
+  // Get current domain state from KV
+  const domainStateStr = await env.DNS_KV.get(`dns:${domain}`);
+  const domainState = domainStateStr
+    ? (JSON.parse(domainStateStr) as DomainState)
+    : null;
 
-    // Get current domain state from KV
-    const domainStateStr = await env.DNS_KV.get(`dns:${domain}`);
-    const domainState: DomainState = domainStateStr
-      ? JSON.parse(domainStateStr)
-      : {
-          state: "unknown",
-          ips: "",
-          serial: "",
-          lastIpChange: null,
-          lastCertChange: null,
-          baselineCert: null,
-        };
+  // Initialize state if it doesn't exist
+  if (!domainState) {
+    const newState: DomainState = {
+      state: "No Reachable Authority",
+      ips: [],
+      serial: null,
+      lastIpChange: null,
+      lastCertChange: null,
+      baselineCert: null,
+    };
+    await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(newState));
+    console.log(`Initialized state for ${domain}`);
+    return;
+  }
 
-    if (noAuthority) {
-      if (domainState.state !== "no_authority") {
-        // Update state
-        domainState.state = "no_authority";
-        await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
-
-        const message =
-          `⚠️ <b>DNS Authority Unreachable</b>\n\n` +
-          `Domain: <code>${domain}</code>\n` +
-          `Status: <code>No Reachable Authority</code>\n` +
-          `Time: ${new Date().toISOString()}\n\n` +
-          `<b>Technical Details:</b>\n` +
-          `- DNS Status: <code>${dnsData.Status}</code>\n` +
-          `- Comments: <code>${dnsData.Comment?.join(", ")}</code>\n` +
-          `- Worker: <code>dns-bot</code>`;
-
-        await sendTelegramMessage(env, message);
-        console.log(`DNS authority unreachable for ${domain}`);
-      }
-      return;
+  // Check for "No Reachable Authority" case
+  if (dnsData.Status === 3) {
+    if (domainState.state !== "No Reachable Authority") {
+      domainState.state = "No Reachable Authority";
+      domainState.ips = [];
+      domainState.serial = null;
+      await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
+      console.log(`Domain ${domain} is now unreachable`);
     }
+    return;
+  }
 
-    // Get all A records
-    const aRecords =
-      dnsData.Answer?.filter((answer) => answer.type === 1) || [];
+  // Get current IPs from A records
+  const currentIps =
+    dnsData.Answer?.filter((record) => record.type === 1).map(
+      (record) => record.data
+    ) || [];
+  const ipChanged = !arraysEqual(currentIps, domainState.ips);
 
-    // Get SOA record
-    const soaRecord = dnsData.Answer?.find((answer) => answer.type === 6);
-    const soaData = soaRecord?.data.split(" ") || [];
-    const serial = soaData[2] || "unknown";
+  // Get SOA serial
+  const soaData =
+    dnsData.Answer?.find((record) => record.type === 6)?.data.split(" ") || [];
+  const serial = soaData[2] || null;
 
-    const previousIPsArray = domainState.ips ? domainState.ips.split(",") : [];
-    const currentIPs = aRecords.map((record) => record.data);
+  // Update state if needed
+  let needsUpdate = false;
+  let certChanged = false;
+  let certInfo: CertificateInfo | null = null;
 
-    // Sort arrays for consistent comparison
-    previousIPsArray.sort();
-    currentIPs.sort();
-
-    // Check if we should trust CloudFront IPs (default to false)
-    let shouldSkipAlert = false;
-    if (
-      domainConfig.trustCloudFrontIps === true &&
-      JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)
-    ) {
-      // Check if all new IPs are CloudFront IPs
-      const allCloudFrontIPs = await Promise.all(
-        currentIPs.map((ip) => isCloudFrontIP(ip))
-      );
-      shouldSkipAlert = allCloudFrontIPs.every((isCloudFront) => isCloudFront);
-    }
-
-    // Always validate certificates
-    const { isExpected, certInfo } = await validateCertificates(
-      domain,
-      currentIPs,
-      env
-    );
-
-    const now = new Date();
-    let ipChanged = false;
-    let certChanged = false;
-    let needsUpdate = false;
-
-    // If the IPs have changed
-    if (JSON.stringify(previousIPsArray) !== JSON.stringify(currentIPs)) {
-      ipChanged = true;
-      domainState.state = "resolved";
-      domainState.ips = currentIPs.join(",");
-      domainState.serial = serial;
-      domainState.lastIpChange = now.toISOString();
-      needsUpdate = true;
-
-      if (!shouldSkipAlert && !domainConfig.suppressIpChangeAlerts) {
-        const message =
-          `⚠️ <b>DNS IP Change Detected</b>\n\n` +
-          `Domain: <code>${domain}</code>\n` +
-          `Previous IPs: <code>${domainState.ips || "none"}</code>\n` +
-          `New IPs: <code>${currentIPs.join(", ")}</code>\n` +
-          `TTL: <code>${aRecords[0]?.TTL || "N/A"}</code>\n` +
-          `Time: ${now.toISOString()}\n\n` +
-          `<b>Technical Details:</b>\n` +
-          `- DNS Status: <code>${dnsData.Status}</code>\n` +
-          `- Record Type: <code>A</code>\n` +
-          `- Number of Records: <code>${aRecords.length}</code>\n` +
-          `- SOA Serial: <code>${serial}</code>\n` +
-          `- Primary NS: <code>${soaData[0] || "unknown"}</code>\n` +
-          `- Admin Email: <code>${soaData[1] || "unknown"}</code>`;
-
-        await sendTelegramMessage(env, message);
-        console.log(`DNS IP change detected for ${domain}:`);
-        console.log(`Previous IPs: ${domainState.ips || "none"}`);
-        console.log(`New IPs: ${currentIPs.join(", ")}`);
-      } else if (domainConfig.suppressIpChangeAlerts) {
-        console.log(`Suppressing IP change alert for ${domain} as configured`);
-      }
-    }
-
-    // Check for certificate changes
-    if (!isExpected && certInfo) {
-      certChanged = true;
-      domainState.lastCertChange = now.toISOString();
-      domainState.baselineCert = certInfo;
+  // Always validate certificates
+  if (currentIps.length > 0) {
+    const {
+      isExpected,
+      certInfo: newCertInfo,
+      certChanged: newCertChanged,
+    } = await validateCertificates(domain, currentIps, domainState);
+    if (!isExpected && newCertInfo) {
+      certChanged = newCertChanged;
+      certInfo = newCertInfo;
+      domainState.lastCertChange = new Date().toISOString();
+      domainState.baselineCert = newCertInfo;
       needsUpdate = true;
 
       if (!domainConfig.suppressCertAlerts) {
         const message =
           `🚨 <b>Unexpected Certificate Change</b>\n\n` +
           `Domain: <code>${domain}</code>\n` +
-          `Time: ${now.toISOString()}\n\n` +
+          `Time: ${new Date().toISOString()}\n\n` +
           `<b>Current Certificate:</b>\n` +
-          `- Issuer: <code>${certInfo.issuer}</code>\n` +
-          `- Subject: <code>${certInfo.subject}</code>\n` +
-          `- Valid From: <code>${certInfo.validFrom}</code>\n` +
-          `- Valid To: <code>${certInfo.validTo}</code>\n` +
-          `- Fingerprint: <code>${certInfo.fingerprint}</code>\n` +
+          `- Issuer: <code>${newCertInfo.issuer}</code>\n` +
+          `- Subject: <code>${newCertInfo.subject}</code>\n` +
+          `- Valid From: <code>${newCertInfo.validFrom}</code>\n` +
+          `- Valid To: <code>${newCertInfo.validTo}</code>\n` +
+          `- Fingerprint: <code>${newCertInfo.fingerprint}</code>\n` +
           (domainState.baselineCert
             ? `\n<b>Previous Certificate:</b>\n` +
               `- Issuer: <code>${domainState.baselineCert.issuer}</code>\n` +
@@ -307,125 +197,139 @@ async function checkDomain(
         );
       }
     }
+  }
 
-    // Check for critical changes (both IP and cert changed within window)
-    if (ipChanged && certChanged && domainConfig.criticalChangeWindowMinutes) {
-      const windowMs = domainConfig.criticalChangeWindowMinutes * 60 * 1000;
-      const lastIpChange = domainState.lastIpChange
-        ? new Date(domainState.lastIpChange)
-        : null;
-      const lastCertChange = domainState.lastCertChange
-        ? new Date(domainState.lastCertChange)
-        : null;
-      const timeSinceLastIpChange = lastIpChange
-        ? now.getTime() - lastIpChange.getTime()
-        : Infinity;
-      const timeSinceLastCertChange = lastCertChange
-        ? now.getTime() - lastCertChange.getTime()
-        : Infinity;
+  // Handle IP changes
+  if (ipChanged) {
+    domainState.ips = currentIps;
+    domainState.lastIpChange = new Date().toISOString();
+    needsUpdate = true;
+    console.log(`IPs changed for ${domain}:`, currentIps);
 
-      if (
-        timeSinceLastIpChange <= windowMs &&
-        timeSinceLastCertChange <= windowMs
-      ) {
-        const message =
-          `🚨🚨 <b>CRITICAL: Concurrent IP and Certificate Changes</b>\n\n` +
-          `Domain: <code>${domain}</code>\n` +
-          `Time: ${now.toISOString()}\n\n` +
-          `<b>IP Change:</b>\n` +
-          `- Previous IPs: <code>${domainState.ips || "none"}</code>\n` +
-          `- New IPs: <code>${currentIPs.join(", ")}</code>\n\n` +
-          `<b>Certificate Change:</b>\n` +
-          `- Current Issuer: <code>${certInfo?.issuer || "unknown"}</code>\n` +
-          `- Current Subject: <code>${
-            certInfo?.subject || "unknown"
-          }</code>\n` +
-          `- Current Fingerprint: <code>${
-            certInfo?.fingerprint || "unknown"
-          }</code>\n` +
-          (domainState.baselineCert
-            ? `\n<b>Previous Certificate:</b>\n` +
-              `- Issuer: <code>${domainState.baselineCert.issuer}</code>\n` +
-              `- Subject: <code>${domainState.baselineCert.subject}</code>\n` +
-              `- Fingerprint: <code>${domainState.baselineCert.fingerprint}</code>\n`
-            : `\n<b>Previous Certificate:</b> None recorded\n`) +
-          `\n<b>Technical Details:</b>\n` +
-          `- Time Window: <code>${domainConfig.criticalChangeWindowMinutes} minutes</code>\n` +
-          `- Last IP Change: <code>${
-            lastIpChange?.toISOString() || "unknown"
-          }</code>\n` +
-          `- Last Cert Change: <code>${
-            lastCertChange?.toISOString() || "unknown"
-          }</code>`;
-
-        await sendTelegramMessage(env, message);
-        console.log(
-          `CRITICAL: Concurrent IP and certificate changes detected for ${domain}`
-        );
-      }
-    }
-
-    // Handle SOA changes if IPs haven't changed
-    if (serial !== domainState.serial && !ipChanged) {
-      domainState.serial = serial;
-      needsUpdate = true;
-
-      // Skip SOA alert if suppression is enabled for this domain (default to true)
-      if (domainConfig.suppressNonIpSoaAlerts !== false) {
-        console.log(`Suppressing SOA alert for ${domain} as configured`);
-        return;
-      }
-
-      // Parse SOA data more carefully
-      const soaFields =
-        soaData.length >= 7 ? soaData : Array(7).fill("unknown");
-      const [primaryNS, adminEmail, serialNum, refresh, retry, expire, minTTL] =
-        soaFields;
-
+    if (!domainConfig.suppressIpChangeAlerts) {
       const message =
-        `📝 <b>DNS Zone Updated</b>\n\n` +
+        `⚠️ <b>DNS IP Change Detected</b>\n\n` +
         `Domain: <code>${domain}</code>\n` +
-        `Previous Serial: <code>${domainState.serial || "unknown"}</code>\n` +
-        `New Serial: <code>${serialNum || "unknown"}</code>\n` +
-        `Time: ${now.toISOString()}\n\n` +
+        `Previous IPs: <code>${domainState.ips.join(", ") || "none"}</code>\n` +
+        `New IPs: <code>${currentIps.join(", ")}</code>\n` +
+        `Time: ${new Date().toISOString()}\n\n` +
         `<b>Technical Details:</b>\n` +
         `- DNS Status: <code>${dnsData.Status}</code>\n` +
-        `- Record Type: <code>SOA</code>\n` +
-        `- Primary NS: <code>${primaryNS}</code>\n` +
-        `- Admin Email: <code>${adminEmail}</code>\n` +
-        `- Refresh: <code>${refresh}</code>\n` +
-        `- Retry: <code>${retry}</code>\n` +
-        `- Expire: <code>${expire}</code>\n` +
-        `- Min TTL: <code>${minTTL}</code>`;
+        `- Record Type: <code>A</code>\n` +
+        `- Number of Records: <code>${currentIps.length}</code>\n` +
+        `- SOA Serial: <code>${serial || "unknown"}</code>`;
 
       await sendTelegramMessage(env, message);
-      console.log(`SOA record updated for ${domain}:`);
-      console.log(`Previous Serial: ${domainState.serial || "unknown"}`);
-      console.log(`New Serial: ${serialNum || "unknown"}`);
-    } else if (!ipChanged) {
+      console.log(`DNS IP change detected for ${domain}:`);
+      console.log(`Previous IPs: ${domainState.ips.join(", ") || "none"}`);
+      console.log(`New IPs: ${currentIps.join(", ")}`);
+    } else {
+      console.log(`Suppressing IP change alert for ${domain} as configured`);
+    }
+  }
+
+  // Handle SOA changes if IPs haven't changed
+  if (serial !== domainState.serial && !ipChanged) {
+    domainState.serial = serial;
+    needsUpdate = true;
+
+    // Skip SOA alert if suppression is enabled for this domain (default to true)
+    if (domainConfig.suppressNonIpSoaAlerts !== false) {
+      console.log(`Suppressing SOA alert for ${domain} as configured`);
+      return;
+    }
+
+    // Parse SOA data more carefully
+    const soaFields = soaData.length >= 7 ? soaData : Array(7).fill("unknown");
+    const [primaryNS, adminEmail, serialNum, refresh, retry, expire, minTTL] =
+      soaFields;
+
+    const message =
+      `📝 <b>DNS Zone Updated</b>\n\n` +
+      `Domain: <code>${domain}</code>\n` +
+      `Previous Serial: <code>${domainState.serial || "unknown"}</code>\n` +
+      `New Serial: <code>${serialNum || "unknown"}</code>\n` +
+      `Time: ${new Date().toISOString()}\n\n` +
+      `<b>Technical Details:</b>\n` +
+      `- DNS Status: <code>${dnsData.Status}</code>\n` +
+      `- Record Type: <code>SOA</code>\n` +
+      `- Primary NS: <code>${primaryNS}</code>\n` +
+      `- Admin Email: <code>${adminEmail}</code>\n` +
+      `- Refresh: <code>${refresh}</code>\n` +
+      `- Retry: <code>${retry}</code>\n` +
+      `- Expire: <code>${expire}</code>\n` +
+      `- Min TTL: <code>${minTTL}</code>`;
+
+    await sendTelegramMessage(env, message);
+    console.log(`SOA record updated for ${domain}:`);
+    console.log(`Previous Serial: ${domainState.serial || "unknown"}`);
+    console.log(`New Serial: ${serialNum || "unknown"}`);
+  } else if (!ipChanged) {
+    console.log(
+      `No change detected for ${domain} (IPs: ${currentIps.join(", ")})`
+    );
+  }
+
+  // Check for critical changes (both IP and cert changed within window)
+  if (ipChanged && certChanged && domainConfig.criticalChangeWindowMinutes) {
+    const windowMs = domainConfig.criticalChangeWindowMinutes * 60 * 1000;
+    const lastIpChange = domainState.lastIpChange
+      ? new Date(domainState.lastIpChange)
+      : null;
+    const lastCertChange = domainState.lastCertChange
+      ? new Date(domainState.lastCertChange)
+      : null;
+    const timeSinceLastIpChange = lastIpChange
+      ? new Date().getTime() - lastIpChange.getTime()
+      : Infinity;
+    const timeSinceLastCertChange = lastCertChange
+      ? new Date().getTime() - lastCertChange.getTime()
+      : Infinity;
+
+    if (
+      timeSinceLastIpChange <= windowMs &&
+      timeSinceLastCertChange <= windowMs
+    ) {
+      const message =
+        `🚨🚨 <b>CRITICAL: Concurrent IP and Certificate Changes</b>\n\n` +
+        `Domain: <code>${domain}</code>\n` +
+        `Time: ${new Date().toISOString()}\n\n` +
+        `<b>IP Change:</b>\n` +
+        `- Previous IPs: <code>${
+          domainState.ips.join(", ") || "none"
+        }</code>\n` +
+        `- New IPs: <code>${currentIps.join(", ")}</code>\n\n` +
+        `<b>Certificate Change:</b>\n` +
+        `- Current Issuer: <code>${certInfo?.issuer || "unknown"}</code>\n` +
+        `- Current Subject: <code>${certInfo?.subject || "unknown"}</code>\n` +
+        `- Current Fingerprint: <code>${
+          certInfo?.fingerprint || "unknown"
+        }</code>\n` +
+        (domainState.baselineCert
+          ? `\n<b>Previous Certificate:</b>\n` +
+            `- Issuer: <code>${domainState.baselineCert.issuer}</code>\n` +
+            `- Subject: <code>${domainState.baselineCert.subject}</code>\n` +
+            `- Fingerprint: <code>${domainState.baselineCert.fingerprint}</code>\n`
+          : `\n<b>Previous Certificate:</b> None recorded\n`) +
+        `\n<b>Technical Details:</b>\n` +
+        `- Time Window: <code>${domainConfig.criticalChangeWindowMinutes} minutes</code>\n` +
+        `- Last IP Change: <code>${
+          lastIpChange?.toISOString() || "unknown"
+        }</code>\n` +
+        `- Last Cert Change: <code>${
+          lastCertChange?.toISOString() || "unknown"
+        }</code>`;
+
+      await sendTelegramMessage(env, message);
       console.log(
-        `No change detected for ${domain} (IPs: ${currentIPs.join(", ")})`
+        `CRITICAL: Concurrent IP and certificate changes detected for ${domain}`
       );
     }
+  }
 
-    // Only write to KV if there were changes
-    if (needsUpdate) {
-      await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
-    }
-  } catch (error: unknown) {
-    const errorMessage =
-      `❌ <b>Error Monitoring DNS</b>\n\n` +
-      `Domain: <code>${domain}</code>\n` +
-      `Error: <code>${
-        error instanceof Error ? error.message : String(error)
-      }</code>\n\n` +
-      `<b>Technical Details:</b>\n` +
-      `- Time: <code>${new Date().toISOString()}</code>\n` +
-      `- Worker: <code>dns-bot</code>\n` +
-      `- Domain: <code>${domain}</code>`;
-
-    await sendTelegramMessage(env, errorMessage);
-    console.error(`Error monitoring DNS for ${domain}:`, error);
+  // Save state if there were changes
+  if (needsUpdate) {
+    await env.DNS_KV.put(`dns:${domain}`, JSON.stringify(domainState));
   }
 }
 
@@ -480,7 +384,7 @@ export default {
 
     // Check each domain
     for (const domainConfig of config.domains) {
-      await checkDomain(domainConfig.name, domainConfig, env);
+      await checkDomain(env, domainConfig);
     }
   },
 
